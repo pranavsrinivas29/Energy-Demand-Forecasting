@@ -9,6 +9,7 @@ DATA_DIR = os.path.join(BASE_DIR, 'data')
 RAW_DATA_PATH = os.path.join(DATA_DIR, 'smart_grid_dataset.csv')
 FEATURE_ENGINEERED_DATA_PATH = os.path.join(DATA_DIR, 'feature_engineered.csv')
 #PROCESSED_DATA_PATH = os.path.join(DATA_DIR, 'processed', 'clean_data.csv')
+INFERENCE_DATA_PATH = os.path.join(DATA_DIR, 'inferenceset.csv')
 
 # --- Model Paths ---
 MODEL_DIR = os.path.join(BASE_DIR, 'models')
@@ -47,4 +48,13 @@ META_LEARNING_HYP_PARAMS = {
     'alpha': [1e-5, 1e-4, 1e-3],
     'learning_rate_init': [0.0005, 0.001, 0.005, 0.002, 0.0002, 0.0001],
     'activation': ['relu', 'tanh'],
+}
+
+GBR_HYP_PARAMS = {
+    'n_estimators': Integer(400, 800),
+    'max_depth': Integer(2, 7),
+    'learning_rate': Real(0.0001, 0.1, prior='log-uniform'),
+    'min_samples_split': Integer(4, 12),
+    'min_samples_leaf': Integer(4, 8),
+    'subsample': Real(0.5, 1.0)
 }
