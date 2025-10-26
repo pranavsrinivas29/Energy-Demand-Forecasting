@@ -1,7 +1,7 @@
 import pandas as pd
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config.config import FEATURE_ENGINEERED_DATA_PATH, TRAIN_TEST_SPLIT, RF_HYP_PARAMS, XGB_HYP_PARAMS
+from config.config import FEATURE_ENGINEERED_DATA_PATH, TRAIN_TEST_SPLIT, RF_HYP_PARAMS, XGB_HYP_PARAMS, META_LEARNING_HYP_PARAMS, GBR_HYP_PARAMS
 from typing import Tuple
 
 from skopt import BayesSearchCV
@@ -13,6 +13,9 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import logging
+from sklearn.ensemble import GradientBoostingRegressor
+
+
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 # Configure logging
@@ -24,28 +27,50 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-class DataPipeline:
+class EnergyDemandForecasting:
     def __init__(self, target='load_da'):
         self.train_test_split = TRAIN_TEST_SPLIT
-        self.target = target
+        self._target = target
         self._model_define()
         self.tscv = TimeSeriesSplit(n_splits=6)
+        self.quantiles = [0.1, 0.5, 0.9]
+        
+    @property
+    def target(self):
+        return self._target
+    
+    @target.setter
+    def target(self, value):
+        self._target=value
         
     def _model_define(self):
         self.rf = RandomForestRegressor(random_state=42, n_jobs=-1, oob_score=True)
         self.xgb = XGBRegressor(objective='reg:squarederror',random_state=42,n_jobs=-1,
             tree_method='hist', eval_metric='rmse')
         self.meta_MLP = MLPRegressor(solver='adam', max_iter=3000, random_state=42)
-        
+        self.gbr_base = GradientBoostingRegressor(loss="quantile", alpha=0.5, random_state=42)
 
     #raw data load
     def data_loading(self, FEATURE_ENGINEERED_DATA_PATH:str)->pd.DataFrame:
         df = pd.read_csv(FEATURE_ENGINEERED_DATA_PATH)
         df.set_index('Timestamp', inplace=True)
         return df
+    
     #feature engineering
     def preprocessing(self, df: pd.DataFrame)->pd.DataFrame:
+        df['load_da'] = df['Predicted Load (kW)'].shift(-1)
+        df['load_d2'] = df['Predicted Load (kW)'].shift(-2)
+        
+        df['lag_1'] = df['Predicted Load (kW)'].shift(1)
+        df['lag_2'] = df['Predicted Load (kW)'].shift(2)
+        df['lag_3'] = df['Predicted Load (kW)'].shift(3)
+        
+        df['pct_tmp_chg'] = df['Temperature (°C)'].pct_change()
+        df['pow_cons_chg'] = df['Power Consumption (kW)'].pct_change()
+        df['roll_mean_load3'] = df['Predicted Load (kW)'].rolling(3).mean()
+        df['roll_std_load3'] = df['Predicted Load (kW)'].rolling(3).std()
+        
+        df.to_csv('inference_featured.csv')
         return df
     
     def featured_data_loading(self, FEATURE_ENGINEERED_DATA_PATH:str)->pd.DataFrame:
@@ -58,20 +83,20 @@ class DataPipeline:
         df_train = df.iloc[:train_size]
         df_test  = df.iloc[train_size:]
         
-        tune_split = int(0.8 * len(df_train))
-        train_tune = df_train.iloc[:tune_split]
-        val_tune   = df_train.iloc[tune_split:]
+        #tune_split = int(0.8 * len(df_train))
+        #train_tune = df_train.iloc[:tune_split]
+        #val_tune   = df_train.iloc[tune_split:]
         
-        X_train_tune = train_tune.drop(self.target, axis=1)
-        y_train_tune = train_tune[self.target]
+        X_train_tune = df_train.drop(self.target, axis=1)
+        y_train_tune = df_train[self.target]
 
-        X_val_tune = val_tune.drop(self.target, axis=1)
-        y_val_tune = val_tune[self.target]
+        #X_val_tune = val_tune.drop(self.target, axis=1)
+        #y_val_tune = val_tune[self.target]
         
         X_test_tune = df_test.drop(self.target, axis=1)
         y_test_tune = df_test[self.target]
         
-        return X_train_tune, X_val_tune, X_test_tune, y_train_tune, y_test_tune, y_val_tune
+        return X_train_tune, X_test_tune, y_train_tune, y_test_tune
 
     def get_model_full_training_datasets(self, df:pd.DataFrame)-> Tuple[pd.DataFrame, pd.Series]:
         X = df.drop(self.target, axis=1)
@@ -105,7 +130,7 @@ class DataPipeline:
                 verbose=0
             )
 
-            opt.fit(X, y)
+            opt.fit(X_train, y_train)
             #print("Best Parameters:", opt.best_params_)
             #print("Best CV Score:", -opt.best_score_)
             logger.info('Random Forest Model Trained')
@@ -116,105 +141,43 @@ class DataPipeline:
             param_space = XGB_HYP_PARAMS
 
             opt = BayesSearchCV(
-                estimator=self.xgb,
-                search_spaces=param_space,
-                n_iter=50,
-                cv=self.tscv,
-                scoring='neg_root_mean_squared_error',
-                n_jobs=-1,
-                random_state=42,
-                verbose=1
-            )
-            opt.fit(X, y)
+                estimator=self.xgb, search_spaces=param_space,
+                n_iter=50, cv=self.tscv,
+                scoring='neg_root_mean_squared_error', n_jobs=-1,
+                random_state=42, verbose=1)
+            
+            opt.fit(X_train, y_train)
             return opt
         
         elif model_name == 'meta':
-            meta_opt_mlp = GridSearchCV(
-            estimator=self.meta_MLP,
-            param_grid=param_space,
+            meta_opt_mlp = GridSearchCV(estimator=self.meta_MLP,
+            param_grid= META_LEARNING_HYP_PARAMS,cv=self.tscv,
+            scoring='neg_root_mean_squared_error',
+            n_jobs=-1,verbose=1)
+
+            meta_opt_mlp.fit(X_train, y_train)
+            return meta_opt_mlp
+        
+        elif model_name == 'qrf':
+            pass
+        else:
+            gbr_opt = BayesSearchCV(
+            estimator=self.gbr_base,
+            search_spaces=param_space,
+            n_iter=40,
             cv=self.tscv,
             scoring='neg_root_mean_squared_error',
-            n_jobs=-1,
-            verbose=1
-            )
-
-            meta_opt_mlp.fit(X, y)
-            return meta_opt_mlp
-        else:
-            return "Invalid model name"
-    
-    def model_fulltraining(self, X: pd.DataFrame, y: pd.Series, model_name:str):
-        model_name = model_name.lower()
-        if model_name is None:
-            raise Exception('Model name not found')
-        elif model_name == 'rf':
-            logger.info('Random Forest Model Training')
-            rf = RandomForestRegressor(random_state=42, n_jobs=-1, oob_score=True)
-
-            param_space = RF_HYP_PARAMS
-
-            tscv = TimeSeriesSplit(n_splits=6)
-
-            opt = BayesSearchCV(
-                estimator=rf,
-                search_spaces=param_space,
-                n_iter=30,
-                cv=tscv,
-                scoring='neg_root_mean_squared_error',
-                n_jobs=-1,
-                random_state=42,
-                verbose=0
-            )
-
-            opt.fit(X, y)
-            #print("Best Parameters:", opt.best_params_)
-            #print("Best CV Score:", -opt.best_score_)
-            logger.info('Random Forest Model Trained')
-
-            return opt
-        
-        elif model_name == 'xgb':
-            xgb = XGBRegressor(
-            objective='reg:squarederror',
+            n_jobs=1,
             random_state=42,
-            n_jobs=-1,
-            tree_method='hist',        # fast histogram algorithm
-            eval_metric='rmse')
+            verbose=2)
 
-            param_space = XGB_HYP_PARAMS
+            gbr_opt.fit(X_train, y_train)
 
-
-            tscv = TimeSeriesSplit(n_splits=6)
-
-            opt = BayesSearchCV(
-                estimator=xgb,
-                search_spaces=param_space,
-                n_iter=50,
-                cv=tscv,
-                scoring='neg_root_mean_squared_error',
-                n_jobs=-1,
-                random_state=42,
-                verbose=1
-            )
-            opt.fit(X, y)
-            return opt
+            #print("Best Median Model Parameters:", gbr_opt.best_params_)
+            #print("Best Median CV RMSE:", -gbr_opt.best_score_)
+            return gbr_opt
         
-        elif model_name == 'meta':
-            meta_opt_mlp = GridSearchCV(
-            estimator=MLPRegressor(solver='adam', max_iter=3000, random_state=42),
-            param_grid=param_space,
-            cv=tscv,
-            scoring='neg_root_mean_squared_error',
-            n_jobs=-1,
-            verbose=1
-            )
-
-            meta_opt_mlp.fit(X, y)
-            return meta_opt_mlp
-        else:
-            return "Invalid model name"
-    
-    def model_predict(self, Xtest, model):
+    def model_predict(self, Xtest:pd.DataFrame, model)->pd.Series:
         ypred = model.predict(Xtest)
         return ypred
     
@@ -225,7 +188,7 @@ class DataPipeline:
         return mae, rmse
         
 if __name__=='__main__':
-    dp = DataPipeline()
+    dp = EnergyDemandForecasting()
     data = dp.featured_data_loading(FEATURE_ENGINEERED_DATA_PATH=FEATURE_ENGINEERED_DATA_PATH)
     #print(data.head(3))
     X, y = dp.get_model_full_training_datasets(data)
