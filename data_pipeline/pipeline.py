@@ -57,9 +57,13 @@ class EnergyDemandForecasting:
         return df
     
     #feature engineering
-    def preprocessing(self, df: pd.DataFrame)->pd.DataFrame:
-        df['load_da'] = df['Predicted Load (kW)'].shift(-1)
-        df['load_d2'] = df['Predicted Load (kW)'].shift(-2)
+    def preprocessing(self, df: pd.DataFrame, inference:bool = False)->pd.DataFrame:
+        
+        if not inference:
+            df['load_da'] = df['Predicted Load (kW)'].shift(-1)
+            df['load_d2'] = df['Predicted Load (kW)'].shift(-2)
+        
+        df = df.drop(['Overload Condition', 'Transformer Fault'], axis=1)
         
         df['lag_1'] = df['Predicted Load (kW)'].shift(1)
         df['lag_2'] = df['Predicted Load (kW)'].shift(2)
@@ -70,6 +74,7 @@ class EnergyDemandForecasting:
         df['roll_mean_load3'] = df['Predicted Load (kW)'].rolling(3).mean()
         df['roll_std_load3'] = df['Predicted Load (kW)'].rolling(3).std()
         
+        df = df.dropna()
         df.to_csv('inference_featured.csv')
         return df
     
