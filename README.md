@@ -25,7 +25,7 @@ energy_forecasting_project/
 │
 └── README.md                         # Project documentation
 
-
+```
 ---
 
 ## 🧠 Overview
