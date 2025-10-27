@@ -34,6 +34,7 @@ class EnergyDemandForecasting:
         self._model_define()
         self.tscv = TimeSeriesSplit(n_splits=6)
         self.quantiles = [0.1, 0.5, 0.9]
+        self.targets = ['load_da', 'load_d2']
         
     @property
     def target(self):
@@ -63,8 +64,6 @@ class EnergyDemandForecasting:
             df['load_da'] = df['Predicted Load (kW)'].shift(-1)
             df['load_d2'] = df['Predicted Load (kW)'].shift(-2)
         
-        df = df.drop(['Overload Condition', 'Transformer Fault'], axis=1)
-        
         df['lag_1'] = df['Predicted Load (kW)'].shift(1)
         df['lag_2'] = df['Predicted Load (kW)'].shift(2)
         df['lag_3'] = df['Predicted Load (kW)'].shift(3)
@@ -74,6 +73,7 @@ class EnergyDemandForecasting:
         df['roll_mean_load3'] = df['Predicted Load (kW)'].rolling(3).mean()
         df['roll_std_load3'] = df['Predicted Load (kW)'].rolling(3).std()
         
+        df = df.drop(['Overload Condition', 'Transformer Fault', 'Predicted Load (kW)'], axis=1)
         df = df.dropna()
         df.to_csv('inference_featured.csv')
         return df
@@ -83,7 +83,7 @@ class EnergyDemandForecasting:
         df.set_index('Timestamp', inplace=True)
         return df
     
-    def get_model_split_training_datasets(self, df:pd.DataFrame)-> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
+    def get_model_split_training_datasets(self, df:pd.DataFrame, inference=False)-> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.Series]:
         train_size = int((1 - self.train_test_split) * len(df))
         df_train = df.iloc[:train_size]
         df_test  = df.iloc[train_size:]
@@ -104,18 +104,19 @@ class EnergyDemandForecasting:
         return X_train_tune, X_test_tune, y_train_tune, y_test_tune
 
     def get_model_full_training_datasets(self, df:pd.DataFrame)-> Tuple[pd.DataFrame, pd.Series]:
-        X = df.drop(self.target, axis=1)
+        
+        X = df.drop(self.targets, axis=1)
         y = df[self.target]
         return X, y
     
     #for model training tune get best hyperparams
     def model_training(self, **kwargs):
         X_train = kwargs.get('X_train')
-        X_val = kwargs.get('X_val')
-        X_test = kwargs.get('X_test')
+        #X_val = kwargs.get('X_val')
+        #X_test = kwargs.get('X_test')
         y_train = kwargs.get('y_train')
-        y_val = kwargs.get('y_val')
-        y_test = kwargs.get('y_test')
+        #y_val = kwargs.get('y_val')
+        #y_test = kwargs.get('y_test')
         model_name = kwargs.get('model_name')
 
         if model_name is None:
@@ -149,7 +150,7 @@ class EnergyDemandForecasting:
                 estimator=self.xgb, search_spaces=param_space,
                 n_iter=50, cv=self.tscv,
                 scoring='neg_root_mean_squared_error', n_jobs=-1,
-                random_state=42, verbose=1)
+                random_state=42, verbose=0)
             
             opt.fit(X_train, y_train)
             return opt
@@ -157,15 +158,13 @@ class EnergyDemandForecasting:
         elif model_name == 'meta':
             meta_opt_mlp = GridSearchCV(estimator=self.meta_MLP,
             param_grid= META_LEARNING_HYP_PARAMS,cv=self.tscv,
-            scoring='neg_root_mean_squared_error',
-            n_jobs=-1,verbose=1)
+            scoring='neg_root_mean_squared_error',n_jobs=-1,verbose=0)
 
             meta_opt_mlp.fit(X_train, y_train)
             return meta_opt_mlp
         
         elif model_name == 'qrf':
-            pass
-        else:
+            param_space = GBR_HYP_PARAMS
             gbr_opt = BayesSearchCV(
             estimator=self.gbr_base,
             search_spaces=param_space,
@@ -174,13 +173,28 @@ class EnergyDemandForecasting:
             scoring='neg_root_mean_squared_error',
             n_jobs=1,
             random_state=42,
-            verbose=2)
+            verbose=0)
 
             gbr_opt.fit(X_train, y_train)
 
             #print("Best Median Model Parameters:", gbr_opt.best_params_)
             #print("Best Median CV RMSE:", -gbr_opt.best_score_)
-            return gbr_opt
+            best_params = gbr_opt.best_params_
+            models = {}
+            for q in self.quantiles:
+                gbr = GradientBoostingRegressor(
+                    loss="quantile",
+                    alpha=q,
+                    random_state=42,
+                    **best_params
+                )
+                gbr.fit(X_train, y_train)
+                models[q] = gbr
+                #preds[q] = gbr.predict(X_test_tune)
+    
+            return models
+        else:
+            return "invalid Model name"
         
     def model_predict(self, Xtest:pd.DataFrame, model)->pd.Series:
         ypred = model.predict(Xtest)
