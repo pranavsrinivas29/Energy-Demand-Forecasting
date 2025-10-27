@@ -4,27 +4,27 @@ This project implements a **modular energy demand forecasting system** using cla
 It supports full data preprocessing, feature engineering, Bayesian hyperparameter optimization, time series cross-validation, and model evaluation.
 
 ---
-
 ## 📁 Project Structure
-
+```text
 energy_forecasting_project/
 │
 ├── config/
-│   ├── config.py                 # Config variables and hyperparameter search spaces
+│   ├── config.py                     # Config variables and hyperparameter search spaces
 │
 ├── data_pipeline/
-│   ├── pipeline.py               # EnergyDemandForecasting class
+│   ├── pipeline.py                   # EnergyDemandForecasting class
 │
 ├── data/
-│   ├── FEATURE_ENGINEERED_DATA.csv
+│   ├── FEATURE_ENGINEERED_DATA.csv   # Example processed dataset
 │
 ├── logs/
-│   ├── pipeline.log              # Training and tuning logs
+│   ├── pipeline.log                  # Training and tuning logs
 │
 ├── notebooks/
-│   ├── model_training.ipynb      # Notebook for interactive experiments
+│   ├── model_training.ipynb          # Notebook for interactive experiments
 │
-└── README.md                     # Project documentation
+└── README.md                         # Project documentation
+
 
 ---
 
